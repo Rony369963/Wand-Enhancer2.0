@@ -1,0 +1,61 @@
+name: Build WandEnhancer.exe
+
+# Builds the Windows executable on every push and on demand (Actions tab -> "Run workflow").
+# The upstream release.yml only runs on k1tbyte/Wand-Enhancer and does not upload the .exe,
+# so this workflow is what produces a downloadable build on forks.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # the project stamps the git commit into the binary
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.17.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-panel/pnpm-lock.yaml
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # The web panel is embedded into the .exe as a resource, so build it first.
+      - name: Install web-panel dependencies
+        run: pnpm --dir web-panel install --frozen-lockfile
+
+      - name: Build web-panel
+        run: pnpm --dir web-panel run build
+
+      - name: Restore NuGet packages
+        run: msbuild Wand-Enhancer.sln /m /t:Restore /p:RestorePackagesConfig=true
+
+      # Release|Any CPU -> PlatformTarget x64 (see WandEnhancer.csproj); ILRepack merges DLLs into a single exe.
+      - name: Build solution (Release, x64)
+        run: msbuild Wand-Enhancer.sln /m /t:Build "/p:Configuration=Release" "/p:Platform=Any CPU"
+
+      - name: Check output
+        shell: pwsh
+        run: |
+          $exe = 'WandEnhancer\bin\Release\WandEnhancer.exe'
+          if (-not (Test-Path $exe)) { throw "Build output not found: $exe" }
+          Get-Item $exe | Format-List Name, Length, LastWriteTime
+
+      - name: Upload WandEnhancer.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: WandEnhancer-${{ github.sha }}
+          path: WandEnhancer/bin/Release/WandEnhancer.exe
+          if-no-files-found: error
